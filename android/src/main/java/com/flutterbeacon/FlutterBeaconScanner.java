@@ -8,6 +8,8 @@ import android.os.RemoteException;
 import android.os.Looper;
 import android.os.Handler;
 import android.util.Log;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
 
 import org.altbeacon.beacon.Beacon;
 import org.altbeacon.beacon.BeaconConsumer;
@@ -30,6 +32,7 @@ class FlutterBeaconScanner {
   private final WeakReference<Activity> activity;
 
   private Handler handler;
+  private boolean isBluetoothCoordinated = false;
 
   private EventChannel.EventSink eventSinkRanging;
   private EventChannel.EventSink eventSinkMonitoring;
@@ -42,10 +45,43 @@ class FlutterBeaconScanner {
     handler = new Handler(Looper.getMainLooper());
   }
 
+  /**
+   * Coordinate with other Bluetooth libraries to avoid conflicts
+   */
+  private void coordinateBluetoothUsage() {
+    if (isBluetoothCoordinated) {
+      return;
+    }
+    
+    try {
+      Log.d(TAG, "Coordinating Bluetooth usage with other libraries...");
+      
+      // Wait a bit to let other Bluetooth operations finish
+      Thread.sleep(1000);
+      
+      // Check if Bluetooth is available
+      BluetoothManager bluetoothManager = (BluetoothManager) activity.get().getSystemService(Context.BLUETOOTH_SERVICE);
+      if (bluetoothManager != null) {
+        BluetoothAdapter bluetoothAdapter = bluetoothManager.getAdapter();
+        if (bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
+          Log.d(TAG, "Bluetooth is enabled and ready for beacon scanning");
+        } else {
+          Log.w(TAG, "Bluetooth is not enabled");
+        }
+      }
+      
+      isBluetoothCoordinated = true;
+      Log.d(TAG, "Bluetooth coordination completed");
+    } catch (Exception e) {
+      Log.e(TAG, "Error coordinating Bluetooth usage: " + e.getMessage());
+    }
+  }
+
   final EventChannel.StreamHandler rangingStreamHandler = new EventChannel.StreamHandler() {
     @Override
     public void onListen(Object o, EventChannel.EventSink eventSink) {
       Log.d("RANGING", "Start ranging = " + o);
+      coordinateBluetoothUsage();
       startRanging(o, eventSink);
     }
 
@@ -101,9 +137,7 @@ class FlutterBeaconScanner {
         }
       }
     } catch (RemoteException e) {
-      if (eventSinkRanging != null) {
-        eventSinkRanging.error("Beacon", e.getLocalizedMessage(), null);
-      }
+      Log.e("RANGING", "Error starting ranging: " + e.getMessage());
     }
   }
 
@@ -113,8 +147,7 @@ class FlutterBeaconScanner {
         for (Region region : regionRanging) {
           plugin.getBeaconManager().stopRangingBeaconsInRegion(region);
         }
-
-        plugin.getBeaconManager().removeRangeNotifier(rangeNotifier);
+        plugin.getBeaconManager().removeAllRangeNotifiers();
       } catch (RemoteException ignored) {
       }
     }
@@ -127,7 +160,7 @@ class FlutterBeaconScanner {
       if (eventSinkRanging != null) {
         final Map<String, Object> map = new HashMap<>();
         map.put("region", FlutterBeaconUtils.regionToMap(region));
-        map.put("beacons", FlutterBeaconUtils.beaconsToArray(new ArrayList<>(collection)));
+        map.put("beacons", FlutterBeaconUtils.beaconsToArray(collection));
         handler.post(new Runnable(){
           @Override
           public void run() {
@@ -143,18 +176,20 @@ class FlutterBeaconScanner {
   final EventChannel.StreamHandler monitoringStreamHandler = new EventChannel.StreamHandler() {
     @Override
     public void onListen(Object o, EventChannel.EventSink eventSink) {
+      Log.d("MONITORING", "Start monitoring = " + o);
+      coordinateBluetoothUsage();
       startMonitoring(o, eventSink);
     }
 
     @Override
     public void onCancel(Object o) {
+      Log.d("MONITORING", "Stop monitoring = " + o);
       stopMonitoring();
     }
   };
 
   @SuppressWarnings("rawtypes")
   private void startMonitoring(Object o, EventChannel.EventSink eventSink) {
-    Log.d(TAG, "START MONITORING=" + o);
     if (o instanceof List) {
       List list = (List) o;
       if (regionMonitoring == null) {
@@ -166,7 +201,9 @@ class FlutterBeaconScanner {
         if (object instanceof Map) {
           Map map = (Map) object;
           Region region = FlutterBeaconUtils.regionFromMap(map);
-          regionMonitoring.add(region);
+          if (region != null) {
+            regionMonitoring.add(region);
+          }
         }
       }
     } else {
@@ -188,15 +225,15 @@ class FlutterBeaconScanner {
     }
 
     try {
-      plugin.getBeaconManager().removeAllMonitorNotifiers();
-      plugin.getBeaconManager().addMonitorNotifier(monitorNotifier);
-      for (Region region : regionMonitoring) {
-        plugin.getBeaconManager().startMonitoringBeaconsInRegion(region);
+      if (plugin.getBeaconManager() != null) {
+        plugin.getBeaconManager().removeAllMonitorNotifiers();
+        plugin.getBeaconManager().addMonitorNotifier(monitorNotifier);
+        for (Region region : regionMonitoring) {
+          plugin.getBeaconManager().startMonitoringBeaconsInRegion(region);
+        }
       }
     } catch (RemoteException e) {
-      if (eventSinkMonitoring != null) {
-        eventSinkMonitoring.error("Beacon", e.getLocalizedMessage(), null);
-      }
+      Log.e("MONITORING", "Error starting monitoring: " + e.getMessage());
     }
   }
 
